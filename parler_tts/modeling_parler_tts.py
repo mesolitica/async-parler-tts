@@ -2077,6 +2077,7 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel):
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         synced_gpus: Optional[bool] = None,
         streamer: Optional["BaseStreamer"] = None,
+        decode: Optional[bool] = True,
         **kwargs,
     ):
         """
@@ -2119,6 +2120,8 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel):
             streamer (`BaseStreamer`, *optional*):
                 Streamer object that will be used to stream the generated sequences. Generated tokens are passed
                 through `streamer.put(token_ids)` and the streamer is responsible for any further processing.
+            decode (`bool`, *optional*, defaults to `True`):
+                Decode the output from LLM using DACEncoder.
             kwargs (`Dict[str, Any]`, *optional*):
                 Ad hoc parametrization of `generate_config` and/or additional model-specific kwargs that will be
                 forwarded to the `forward` function of the model. If the model is an encoder-decoder model, encoder
@@ -2272,30 +2275,33 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel):
                 "Ensure that beam search is de-activated by setting `num_beams=1` and `num_beam_groups=1`."
             )
 
-        if generation_config.return_dict_in_generate:
-            output_ids = outputs.sequences
+        if decode:
+            if generation_config.return_dict_in_generate:
+                output_ids = outputs.sequences
+            else:
+                output_ids = outputs
+            # apply the pattern mask to the final ids
+            output_ids = self.apply_delay_pattern_mask(output_ids, model_kwargs["delay_pattern_mask"])
+
+            # revert the pattern delay mask by filtering the eos and bos token ids from the delay pattern mask
+            _, mask = self.build_delay_pattern_mask(
+                input_ids,
+                bos_token_id=generation_config.bos_token_id,
+                pad_token_id=generation_config.pad_token_id,
+                max_length=output_ids.shape[1],
+            )
+
+            mask = (mask != generation_config._bos_token_tensor) & (mask != generation_config._pad_token_tensor)
+            output_ids = output_ids[mask].reshape(batch_size, self.num_codebooks, -1)
+
+            if generation_config.return_dict_in_generate:
+                outputs.sequences = output_ids
+                return outputs
+            else:
+                return output_ids
         else:
-            output_ids = outputs
-
-        # apply the pattern mask to the final ids
-        output_ids = self.apply_delay_pattern_mask(output_ids, model_kwargs["delay_pattern_mask"])
-
-        # revert the pattern delay mask by filtering the eos and bos token ids from the delay pattern mask
-        _, mask = self.build_delay_pattern_mask(
-            input_ids,
-            bos_token_id=generation_config.bos_token_id,
-            pad_token_id=generation_config.pad_token_id,
-            max_length=output_ids.shape[1],
-        )
-
-        mask = (mask != generation_config._bos_token_tensor) & (mask != generation_config._pad_token_tensor)
-        output_ids = output_ids[mask].reshape(batch_size, self.num_codebooks, -1)
-
-        if generation_config.return_dict_in_generate:
-            outputs.sequences = output_ids
             return outputs
-        else:
-            return output_ids
+
 
 
 @add_start_docstrings(
