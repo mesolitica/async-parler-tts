@@ -203,7 +203,7 @@ async def main(text, request_id):
     do_sample=True,
     temperature=1.0,
     min_new_tokens=10,
-    decode=False,
+    decode=False, # to skip final decode to save computation
   )
   
   thread = Thread(target=model.generate, kwargs=generation_kwargs)
